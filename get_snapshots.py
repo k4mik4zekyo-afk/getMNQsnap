@@ -44,7 +44,14 @@ def ensure_export_dir(path="export"):
     os.makedirs(path, exist_ok=True)
     return path
 
-def plot_candles_to_file(df, title, filename, max_bars=120):
+def plot_candles_to_file(
+    df,
+    title,
+    filename,
+    max_bars=120,
+    interval_minutes=None,
+    initial_balance=None,
+):
     export_dir = ensure_export_dir()
     if df.empty:
         raise ValueError("DataFrame is empty; cannot plot candles.")
@@ -59,6 +66,41 @@ def plot_candles_to_file(df, title, filename, max_bars=120):
     ax.set_title(title)
     ax.set_ylabel("Price")
     ax.grid(True, alpha=0.3)
+
+    if interval_minutes is not None and interval_minutes < 1440:
+        session_tz = sub.index.tz
+        min_ts = sub.index.min()
+        max_ts = sub.index.max()
+        unique_days = pd.Index(sub.index.date).unique()
+        for day in unique_days:
+            base_ts = pd.Timestamp(day).tz_localize(session_tz)
+            open_ts = base_ts + pd.Timedelta(hours=9, minutes=30)
+            close_ts = base_ts + pd.Timedelta(hours=16)
+            if min_ts <= open_ts <= max_ts:
+                ax.axvline(open_ts, linestyle="--", color="gray", alpha=0.6, linewidth=1)
+            if min_ts <= close_ts <= max_ts:
+                ax.axvline(close_ts, linestyle="--", color="gray", alpha=0.6, linewidth=1)
+
+    if initial_balance is not None:
+        ib_high = initial_balance.get("high")
+        ib_low = initial_balance.get("low")
+        ib_date = initial_balance.get("date")
+        if ib_high is not None and ib_low is not None:
+            ax.axhline(ib_high, color="blue", linestyle="--", linewidth=1.2, label="IB High")
+            ax.axhline(ib_low, color="blue", linestyle="--", linewidth=1.2, label="IB Low")
+            if ib_date is not None:
+                ax.text(
+                    0.01,
+                    0.98,
+                    f"IB {ib_date}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=9,
+                    color="blue",
+                )
+            ax.legend(loc="upper right")
+
     plt.xticks(rotation=45)
     plt.tight_layout()
     output_path = os.path.join(export_dir, filename)
@@ -66,11 +108,67 @@ def plot_candles_to_file(df, title, filename, max_bars=120):
     plt.close(fig)
     print(f"Saved candle plot to {output_path}")
 
-def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d):
-    plot_candles_to_file(mnq05, "MNQ 5m Candles", "mnq05_candles.png")
-    plot_candles_to_file(mnq30, "MNQ 30m Candles", "mnq30_candles.png")
-    plot_candles_to_file(mnq60, "MNQ 60m Candles", "mnq60_candles.png")
-    plot_candles_to_file(mnq1d, "MNQ 1D Candles", "mnq1d_candles.png", max_bars=90)
+def calculate_initial_balance(
+    df,
+    session_start=time(9, 30),
+    duration_minutes=60,
+):
+    if df.empty:
+        raise ValueError("DataFrame is empty; cannot calculate initial balance.")
+    end_minutes = session_start.hour * 60 + session_start.minute + duration_minutes
+    end_hour = end_minutes // 60
+    end_minute = end_minutes % 60
+    session_end = time(end_hour, end_minute)
+
+    recent_dates = pd.Index(df.index.date).unique()[::-1]
+    for day in recent_dates:
+        start_ts = pd.Timestamp.combine(day, session_start)
+        end_ts = pd.Timestamp.combine(day, session_end)
+        start_ts = pd.Timestamp(start_ts, tz=df.index.tz)
+        end_ts = pd.Timestamp(end_ts, tz=df.index.tz)
+        window = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
+        if not window.empty:
+            return {
+                "date": day,
+                "high": window["High"].max(),
+                "low": window["Low"].min(),
+            }
+    return None
+
+def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d, min_hours=18):
+    base_interval_minutes = 5
+    target_bars = int(np.ceil((min_hours * 60) / base_interval_minutes))
+    initial_balance = calculate_initial_balance(mnq05)
+
+    plot_candles_to_file(
+        mnq05,
+        "MNQ 5m Candles",
+        "mnq05_candles.png",
+        max_bars=target_bars,
+        interval_minutes=5,
+        initial_balance=initial_balance,
+    )
+    plot_candles_to_file(
+        mnq30,
+        "MNQ 30m Candles",
+        "mnq30_candles.png",
+        max_bars=target_bars,
+        interval_minutes=30,
+    )
+    plot_candles_to_file(
+        mnq60,
+        "MNQ 60m Candles",
+        "mnq60_candles.png",
+        max_bars=target_bars,
+        interval_minutes=60,
+    )
+    plot_candles_to_file(
+        mnq1d,
+        "MNQ 1D Candles",
+        "mnq1d_candles.png",
+        max_bars=target_bars,
+        interval_minutes=1440,
+    )
 
 def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_anchored_vp.png"):
     export_dir = ensure_export_dir()
