@@ -40,6 +40,85 @@ def plot_last_candles(df, n=7):
     plt.tight_layout()
     plt.show()
 
+def ensure_export_dir(path="export"):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def plot_candles_to_file(df, title, filename, max_bars=120):
+    export_dir = ensure_export_dir()
+    if df.empty:
+        raise ValueError("DataFrame is empty; cannot plot candles.")
+    sub = df.tail(max_bars)
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    for ts, row in sub.iterrows():
+        color = "green" if row["Close"] >= row["Open"] else "red"
+        ax.plot([ts, ts], [row["Low"], row["High"]], color=color, linewidth=1)
+        ax.plot([ts, ts], [row["Open"], row["Close"]], color=color, linewidth=5)
+
+    ax.set_title(title)
+    ax.set_ylabel("Price")
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    output_path = os.path.join(export_dir, filename)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved candle plot to {output_path}")
+
+def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d):
+    plot_candles_to_file(mnq05, "MNQ 5m Candles", "mnq05_candles.png")
+    plot_candles_to_file(mnq30, "MNQ 30m Candles", "mnq30_candles.png")
+    plot_candles_to_file(mnq60, "MNQ 60m Candles", "mnq60_candles.png")
+    plot_candles_to_file(mnq1d, "MNQ 1D Candles", "mnq1d_candles.png", max_bars=90)
+
+def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_anchored_vp.png"):
+    export_dir = ensure_export_dir()
+    if df.empty:
+        raise ValueError("DataFrame is empty; cannot plot volume profile.")
+    if anchor_index < 0:
+        anchor_index = max(len(df) + anchor_index, 0)
+    anchor_index = min(anchor_index, len(df) - 1)
+
+    anchored = df.iloc[anchor_index:].copy()
+    if "Volume" not in anchored.columns:
+        raise ValueError("DataFrame must include a Volume column for volume profile.")
+
+    typical_price = (anchored["High"] + anchored["Low"] + anchored["Close"]) / 3
+    price_min = typical_price.min()
+    price_max = typical_price.max()
+    if price_min == price_max:
+        price_min -= 0.5
+        price_max += 0.5
+
+    hist, edges = np.histogram(
+        typical_price,
+        bins=bins,
+        range=(price_min, price_max),
+        weights=anchored["Volume"],
+    )
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.barh(centers, hist, height=(edges[1] - edges[0]) * 0.9, color="steelblue")
+    ax.set_title("Anchored Volume Profile (MNQ 5m)")
+    ax.set_xlabel("Volume")
+    ax.set_ylabel("Price")
+    ax.grid(True, axis="x", alpha=0.3)
+    plt.tight_layout()
+    output_path = os.path.join(export_dir, filename)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved anchored volume profile to {output_path}")
+
+def export_mnq05_volume_profile(mnq05, anchor_index=0, bins=40):
+    plot_anchored_volume_profile(
+        mnq05,
+        anchor_index=anchor_index,
+        bins=bins,
+        filename="mnq05_anchored_vp.png",
+    )
+
 def what_if(ticker, buy_date, sell_date, amount_invested):
     '''
     Parameters
@@ -181,3 +260,6 @@ if __name__ == "__main__":
                         end_time=recent)
     
     print(mnq1d.tail(10))
+
+    export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d)
+    export_mnq05_volume_profile(mnq05, anchor_index=0, bins=40)
