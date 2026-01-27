@@ -12,7 +12,7 @@ This file is the primary target for all modifications, bug fixes, and feature ch
 
 ## Scope
 - Focus exclusively on `get_snapshots.py`
-- Treat all other files as placeholder or dummy code
+- Treat all other files as placeholder or dummy code except `requirements.txt`
 
 ## Restrictions
 - Do NOT refactor, clean up, or modify other files
