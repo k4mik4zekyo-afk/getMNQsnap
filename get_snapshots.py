@@ -162,7 +162,13 @@ def calculate_previous_day_initial_balance(df, start_time=time(9, 30), end_time=
 
 def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d):
     ib_levels = calculate_previous_day_initial_balance(mnq05)
-    plot_candles_to_file(mnq05, "MNQ 5m Candles", "mnq05_candles.png", ib_levels=ib_levels)
+    plot_candles_to_file(
+        mnq05,
+        "MNQ 5m Candles",
+        "mnq05_candles.png",
+        max_bars=len(mnq05),
+        ib_levels=ib_levels,
+    )
     plot_candles_to_file(mnq30, "MNQ 30m Candles", "mnq30_candles.png")
     plot_candles_to_file(mnq60, "MNQ 60m Candles", "mnq60_candles.png")
     plot_candles_to_file(mnq1d, "MNQ 1D Candles", "mnq1d_candles.png", max_bars=90)
