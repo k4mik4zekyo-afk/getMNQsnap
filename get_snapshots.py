@@ -15,6 +15,14 @@ def save_to_csv(df: pd.DataFrame, filename: str) -> None:
     df.to_csv(filename)
     print(f"Saved to {filename}")
 
+def get_volume_bar_width(index):
+    if len(index) < 2:
+        return 0.8
+    index_numbers = plt.matplotlib.dates.date2num(index.to_pydatetime())
+    diffs = np.diff(index_numbers)
+    median_diff = np.median(diffs) if diffs.size else 0.8
+    return median_diff * 0.8
+
 def plot_close(df):
     if df.empty:
         raise ValueError("DataFrame is empty; cannot plot close.")
@@ -32,7 +40,8 @@ def plot_close(df):
 
     if "Volume" in df.columns:
         colors = np.where(df["Close"] >= df["Open"], "green", "red")
-        ax_vol.bar(df.index, df["Volume"], color=colors, width=0.8)
+        bar_width = get_volume_bar_width(df.index)
+        ax_vol.bar(df.index, df["Volume"], color=colors, width=bar_width)
         ax_vol.set_ylabel("Vol")
         ax_vol.grid(True, axis="y", alpha=0.3)
 
@@ -62,7 +71,8 @@ def plot_last_candles(df, n=7):
 
     if "Volume" in sub.columns:
         colors = np.where(sub["Close"] >= sub["Open"], "green", "red")
-        ax_vol.bar(sub.index, sub["Volume"], color=colors, width=0.8)
+        bar_width = get_volume_bar_width(sub.index)
+        ax_vol.bar(sub.index, sub["Volume"], color=colors, width=bar_width)
         ax_vol.set_ylabel("Vol")
         ax_vol.grid(True, axis="y", alpha=0.3)
 
@@ -117,7 +127,8 @@ def plot_candles_to_file(df, title, filename, max_bars=120, ib_levels=None):
 
     if "Volume" in sub.columns:
         colors = np.where(sub["Close"] >= sub["Open"], "green", "red")
-        ax_vol.bar(sub.index, sub["Volume"], color=colors, width=0.8)
+        bar_width = get_volume_bar_width(sub.index)
+        ax_vol.bar(sub.index, sub["Volume"], color=colors, width=bar_width)
         ax_vol.set_ylabel("Vol")
         ax_vol.grid(True, axis="y", alpha=0.3)
 
