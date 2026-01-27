@@ -1,5 +1,8 @@
 # Agent Instructions
 
+## Setup
+Install dependencies from `requirements.txt`
+
 ## Primary Script
 The main and only meaningful script in this repository is:
 
