@@ -34,6 +34,7 @@ def plot_close(df):
         gridspec_kw={"height_ratios": [4, 1], "hspace": 0.05},
     )
     ax_price.plot(df.index, df["Close"], color="black")
+    add_session_markers(ax_price, df.index)
     ax_price.set_title("Close Price")
     ax_price.set_ylabel("Price")
     ax_price.grid(True, alpha=0.3)
@@ -65,6 +66,7 @@ def plot_last_candles(df, n=7):
         ax_price.plot([date, date], [row["Open"], row["Close"]], linewidth=6,
                       color=color)  # body
 
+    add_session_markers(ax_price, sub.index)
     ax_price.set_title(f"Last {n} Candles")
     ax_price.set_ylabel("Price")
     ax_price.grid(True, alpha=0.3)
@@ -84,6 +86,19 @@ def ensure_export_dir(path="export"):
     os.makedirs(path, exist_ok=True)
     return path
 
+def add_session_markers(ax, index, start_marker=time(9, 30), end_marker=time(16, 0)):
+    if len(index) == 0:
+        return
+    tzinfo = index.tz
+    for session_date in sorted({ts.date() for ts in index}):
+        start_ts = pd.Timestamp.combine(session_date, start_marker)
+        end_ts = pd.Timestamp.combine(session_date, end_marker)
+        if tzinfo is not None:
+            start_ts = start_ts.tz_localize(tzinfo)
+            end_ts = end_ts.tz_localize(tzinfo)
+        ax.axvline(start_ts, color="gray", linestyle=":", linewidth=1, alpha=0.7)
+        ax.axvline(end_ts, color="gray", linestyle=":", linewidth=1, alpha=0.7)
+
 def plot_candles_to_file(df, title, filename, max_bars=120, ib_levels=None):
     export_dir = ensure_export_dir()
     if df.empty:
@@ -101,6 +116,8 @@ def plot_candles_to_file(df, title, filename, max_bars=120, ib_levels=None):
         color = "green" if row["Close"] >= row["Open"] else "red"
         ax_price.plot([ts, ts], [row["Low"], row["High"]], color=color, linewidth=1)
         ax_price.plot([ts, ts], [row["Open"], row["Close"]], color=color, linewidth=5)
+
+    add_session_markers(ax_price, sub.index)
 
     if ib_levels:
         line_styles = {
@@ -146,22 +163,30 @@ def plot_candles_to_file(df, title, filename, max_bars=120, ib_levels=None):
 
 def calculate_previous_day_initial_balance(df, start_time=time(9, 30), end_time=time(10, 30)):
     if df.empty:
+        print("IB diagnostic: DataFrame is empty.")
         return None
     dates = sorted({ts.date() for ts in df.index})
     if len(dates) < 2:
+        print("IB diagnostic: Not enough sessions to calculate previous day IB.")
         return None
     prev_day = dates[-2]
     mask = (df.index.date == prev_day) & (df.index.time >= start_time) & (df.index.time <= end_time)
     ib_slice = df.loc[mask]
     if ib_slice.empty:
+        print(f"IB diagnostic: No bars in IB window for {prev_day}.")
         return None
     ib_high = ib_slice["High"].max()
     ib_low = ib_slice["Low"].min()
     ib_mid = (ib_high + ib_low) / 2
+    print(
+        f"IB diagnostic: {prev_day} window {start_time}-{end_time} "
+        f"rows={len(ib_slice)} high={ib_high:.2f} low={ib_low:.2f} mid={ib_mid:.2f}"
+    )
     return {"high": ib_high, "low": ib_low, "mid": ib_mid}
 
 def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d):
     ib_levels = calculate_previous_day_initial_balance(mnq05)
+    print(f"IB diagnostic: levels={ib_levels}")
     plot_candles_to_file(
         mnq05,
         "MNQ 5m Candles",
