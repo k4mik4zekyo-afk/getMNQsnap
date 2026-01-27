@@ -56,7 +56,13 @@ def plot_candles_to_file(
     if df.empty:
         raise ValueError("DataFrame is empty; cannot plot candles.")
     sub = df.tail(max_bars)
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, (ax, ax_vol) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 6),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
 
     for ts, row in sub.iterrows():
         color = "green" if row["Close"] >= row["Open"] else "red"
@@ -101,12 +107,59 @@ def plot_candles_to_file(
                 )
             ax.legend(loc="upper right")
 
+    if "Volume" in sub.columns:
+        vol_colors = [
+            "green" if row["Close"] >= row["Open"] else "red" for _, row in sub.iterrows()
+        ]
+        if interval_minutes is not None:
+            width_days = interval_minutes / (24 * 60)
+        else:
+            diffs = sub.index.to_series().diff().dropna()
+            width_days = diffs.median().total_seconds() / (24 * 60 * 60) if not diffs.empty else 0.003
+        ax_vol.bar(sub.index, sub["Volume"], color=vol_colors, width=width_days)
+        ax_vol.set_ylabel("Volume")
+        ax_vol.grid(True, alpha=0.2)
+    else:
+        ax_vol.axis("off")
+        print(f"Volume data missing for {title}; skipping volume subplot.")
+
     plt.xticks(rotation=45)
     plt.tight_layout()
     output_path = os.path.join(export_dir, filename)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"Saved candle plot to {output_path}")
+
+def _select_ib_day(df):
+    day_counts = df.groupby(df.index.date).size()
+    if day_counts.empty:
+        return None
+    return day_counts.sort_values(ascending=False).index[0]
+
+def _calculate_value_area(hist, centers, target_pct=0.7):
+    if hist.sum() == 0:
+        return None, None, None
+    poc_idx = int(np.argmax(hist))
+    total_volume = hist.sum()
+    value_volume = hist[poc_idx]
+    low_idx = poc_idx
+    high_idx = poc_idx
+
+    while value_volume / total_volume < target_pct:
+        next_low = low_idx - 1
+        next_high = high_idx + 1
+        low_vol = hist[next_low] if next_low >= 0 else -1
+        high_vol = hist[next_high] if next_high < len(hist) else -1
+        if low_vol == -1 and high_vol == -1:
+            break
+        if high_vol >= low_vol:
+            high_idx = next_high
+            value_volume += high_vol
+        else:
+            low_idx = next_low
+            value_volume += low_vol
+
+    return centers[poc_idx], centers[high_idx], centers[low_idx]
 
 def calculate_initial_balance(
     df,
@@ -120,7 +173,11 @@ def calculate_initial_balance(
     end_minute = end_minutes % 60
     session_end = time(end_hour, end_minute)
 
+    ib_day = _select_ib_day(df)
     recent_dates = pd.Index(df.index.date).unique()[::-1]
+    if ib_day is not None:
+        recent_dates = [ib_day] + [d for d in recent_dates if d != ib_day]
+
     for day in recent_dates:
         start_ts = pd.Timestamp.combine(day, session_start)
         end_ts = pd.Timestamp.combine(day, session_end)
@@ -132,6 +189,7 @@ def calculate_initial_balance(
                 "date": day,
                 "high": window["High"].max(),
                 "low": window["Low"].min(),
+                "count": len(window),
             }
     return None
 
@@ -139,6 +197,11 @@ def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d, min_hours=18):
     base_interval_minutes = 5
     target_bars = int(np.ceil((min_hours * 60) / base_interval_minutes))
     initial_balance = calculate_initial_balance(mnq05)
+    if initial_balance:
+        print(
+            "Previous day IB:",
+            f"{initial_balance['date']} | High {initial_balance['high']:.2f} | Low {initial_balance['low']:.2f}",
+        )
 
     plot_candles_to_file(
         mnq05,
@@ -203,6 +266,20 @@ def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_an
     ax.set_xlabel("Volume")
     ax.set_ylabel("Price")
     ax.grid(True, axis="x", alpha=0.3)
+
+    poc, vah, val = _calculate_value_area(hist, centers, target_pct=0.7)
+    if poc is not None:
+        for level, label in [(poc, "POC"), (vah, "VAH"), (val, "VAL")]:
+            ax.axhline(level, color="darkorange", linestyle="--", linewidth=1)
+            ax.text(
+                hist.max() * 1.01,
+                level,
+                f"{label}: {level:.2f}",
+                va="center",
+                ha="left",
+                fontsize=9,
+                color="darkorange",
+            )
     plt.tight_layout()
     output_path = os.path.join(export_dir, filename)
     fig.savefig(output_path, dpi=150)
