@@ -1,4 +1,5 @@
 import numpy as np
+import pytz
 import os
 import sys
 from datetime import date, time
@@ -56,13 +57,7 @@ def plot_candles_to_file(
     if df.empty:
         raise ValueError("DataFrame is empty; cannot plot candles.")
     sub = df.tail(max_bars)
-    fig, (ax, ax_vol) = plt.subplots(
-        2,
-        1,
-        figsize=(12, 6),
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
-    )
+    fig, ax = plt.subplots(figsize=(12, 5))
 
     for ts, row in sub.iterrows():
         color = "green" if row["Close"] >= row["Open"] else "red"
@@ -107,59 +102,12 @@ def plot_candles_to_file(
                 )
             ax.legend(loc="upper right")
 
-    if "Volume" in sub.columns:
-        vol_colors = [
-            "green" if row["Close"] >= row["Open"] else "red" for _, row in sub.iterrows()
-        ]
-        if interval_minutes is not None:
-            width_days = interval_minutes / (24 * 60)
-        else:
-            diffs = sub.index.to_series().diff().dropna()
-            width_days = diffs.median().total_seconds() / (24 * 60 * 60) if not diffs.empty else 0.003
-        ax_vol.bar(sub.index, sub["Volume"], color=vol_colors, width=width_days)
-        ax_vol.set_ylabel("Volume")
-        ax_vol.grid(True, alpha=0.2)
-    else:
-        ax_vol.axis("off")
-        print(f"Volume data missing for {title}; skipping volume subplot.")
-
     plt.xticks(rotation=45)
     plt.tight_layout()
     output_path = os.path.join(export_dir, filename)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"Saved candle plot to {output_path}")
-
-def _select_ib_day(df):
-    day_counts = df.groupby(df.index.date).size()
-    if day_counts.empty:
-        return None
-    return day_counts.sort_values(ascending=False).index[0]
-
-def _calculate_value_area(hist, centers, target_pct=0.7):
-    if hist.sum() == 0:
-        return None, None, None
-    poc_idx = int(np.argmax(hist))
-    total_volume = hist.sum()
-    value_volume = hist[poc_idx]
-    low_idx = poc_idx
-    high_idx = poc_idx
-
-    while value_volume / total_volume < target_pct:
-        next_low = low_idx - 1
-        next_high = high_idx + 1
-        low_vol = hist[next_low] if next_low >= 0 else -1
-        high_vol = hist[next_high] if next_high < len(hist) else -1
-        if low_vol == -1 and high_vol == -1:
-            break
-        if high_vol >= low_vol:
-            high_idx = next_high
-            value_volume += high_vol
-        else:
-            low_idx = next_low
-            value_volume += low_vol
-
-    return centers[poc_idx], centers[high_idx], centers[low_idx]
 
 def calculate_initial_balance(
     df,
@@ -173,11 +121,7 @@ def calculate_initial_balance(
     end_minute = end_minutes % 60
     session_end = time(end_hour, end_minute)
 
-    ib_day = _select_ib_day(df)
     recent_dates = pd.Index(df.index.date).unique()[::-1]
-    if ib_day is not None:
-        recent_dates = [ib_day] + [d for d in recent_dates if d != ib_day]
-
     for day in recent_dates:
         start_ts = pd.Timestamp.combine(day, session_start)
         end_ts = pd.Timestamp.combine(day, session_end)
@@ -189,19 +133,14 @@ def calculate_initial_balance(
                 "date": day,
                 "high": window["High"].max(),
                 "low": window["Low"].min(),
-                "count": len(window),
             }
     return None
 
-def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d, min_hours=18):
+def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d, min_hours=22):
     base_interval_minutes = 5
     target_bars = int(np.ceil((min_hours * 60) / base_interval_minutes))
     initial_balance = calculate_initial_balance(mnq05)
-    if initial_balance:
-        print(
-            "Previous day IB:",
-            f"{initial_balance['date']} | High {initial_balance['high']:.2f} | Low {initial_balance['low']:.2f}",
-        )
+    print(initial_balance)
 
     plot_candles_to_file(
         mnq05,
@@ -233,18 +172,63 @@ def export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d, min_hours=18):
         interval_minutes=1440,
     )
 
-def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_anchored_vp.png"):
+def plot_anchored_volume_profile(df, start_time=None, end_time=None, bins=40, 
+                                  value_area_pct=0.70, filename="mnq05_anchored_vp.png"):
+    """
+    Plot an anchored volume profile with POC, VAH, and VAL.
+    
+    Parameters:
+    -----------
+    df : DataFrame with datetime index and OHLCV columns
+    start_time : str or datetime, default None (9:30 AM PST previous day)
+    end_time : str or datetime, default None (5:30 AM PST current day)
+    bins : int, number of price levels
+    value_area_pct : float, percentage of volume for value area (default 0.70)
+    filename : str, output filename
+    """
     export_dir = ensure_export_dir()
     if df.empty:
         raise ValueError("DataFrame is empty; cannot plot volume profile.")
-    if anchor_index < 0:
-        anchor_index = max(len(df) + anchor_index, 0)
-    anchor_index = min(anchor_index, len(df) - 1)
-
-    anchored = df.iloc[anchor_index:].copy()
+    
+    # Ensure datetime index
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame must have a DatetimeIndex for time-based filtering.")
+    
+    # Set default time range if not provided
+    if start_time is None or end_time is None:
+        # Get current time in PST
+        pst = pytz.timezone('America/Los_Angeles')
+        now = pd.Timestamp.now(tz=pst)
+        
+        # Default: 9:30 AM PST previous day to 5:30 AM PST current day
+        if start_time is None:
+            start_time = now.normalize() - pd.Timedelta(days=1) + pd.Timedelta(hours=9, minutes=30)
+        if end_time is None:
+            end_time = now.normalize() + pd.Timedelta(hours=5, minutes=30)
+    
+    # Convert to timezone-aware if needed
+    pst = pytz.timezone('America/Los_Angeles')
+    if isinstance(start_time, str):
+        start_time = pd.to_datetime(start_time).tz_localize(pst)
+    if isinstance(end_time, str):
+        end_time = pd.to_datetime(end_time).tz_localize(pst)
+    
+    # Ensure df index is timezone-aware
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC').tz_convert(pst)
+    else:
+        df.index = df.index.tz_convert(pst)
+    
+    # Filter data by time range
+    anchored = df.loc[start_time:end_time].copy()
+    
+    if anchored.empty:
+        raise ValueError(f"No data found between {start_time} and {end_time}")
+    
     if "Volume" not in anchored.columns:
         raise ValueError("DataFrame must include a Volume column for volume profile.")
 
+    # Calculate typical price
     typical_price = (anchored["High"] + anchored["Low"] + anchored["Close"]) / 3
     price_min = typical_price.min()
     price_max = typical_price.max()
@@ -252,6 +236,7 @@ def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_an
         price_min -= 0.5
         price_max += 0.5
 
+    # Create volume histogram
     hist, edges = np.histogram(
         typical_price,
         bins=bins,
@@ -259,38 +244,103 @@ def plot_anchored_volume_profile(df, anchor_index=0, bins=40, filename="mnq05_an
         weights=anchored["Volume"],
     )
     centers = (edges[:-1] + edges[1:]) / 2
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh(centers, hist, height=(edges[1] - edges[0]) * 0.9, color="steelblue")
-    ax.set_title("Anchored Volume Profile (MNQ 5m)")
-    ax.set_xlabel("Volume")
-    ax.set_ylabel("Price")
-    ax.grid(True, axis="x", alpha=0.3)
-
-    poc, vah, val = _calculate_value_area(hist, centers, target_pct=0.7)
-    if poc is not None:
-        for level, label in [(poc, "POC"), (vah, "VAH"), (val, "VAL")]:
-            ax.axhline(level, color="darkorange", linestyle="--", linewidth=1)
-            ax.text(
-                hist.max() * 1.01,
-                level,
-                f"{label}: {level:.2f}",
-                va="center",
-                ha="left",
-                fontsize=9,
-                color="darkorange",
-            )
+    
+    # Calculate Point of Control (POC) - price level with highest volume
+    poc_index = np.argmax(hist)
+    poc_price = centers[poc_index]
+    poc_volume = hist[poc_index]
+    
+    # Calculate Value Area (70% of volume)
+    total_volume = hist.sum()
+    target_volume = total_volume * value_area_pct
+    
+    # Start from POC and expand outward to capture 70% of volume
+    accumulated_volume = hist[poc_index]
+    lower_index = poc_index
+    upper_index = poc_index
+    
+    while accumulated_volume < target_volume:
+        # Check which side to expand (choose side with more volume)
+        lower_vol = hist[lower_index - 1] if lower_index > 0 else 0
+        upper_vol = hist[upper_index + 1] if upper_index < len(hist) - 1 else 0
+        
+        if lower_vol > upper_vol and lower_index > 0:
+            lower_index -= 1
+            accumulated_volume += hist[lower_index]
+        elif upper_index < len(hist) - 1:
+            upper_index += 1
+            accumulated_volume += hist[upper_index]
+        else:
+            # Can't expand further
+            break
+    
+    val_price = centers[lower_index]  # Value Area Low
+    vah_price = centers[upper_index]  # Value Area High
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Plot volume bars
+    colors = ['lightcoral' if i < lower_index or i > upper_index else 'steelblue' 
+              for i in range(len(hist))]
+    ax.barh(centers, hist, height=(edges[1] - edges[0]) * 0.9, color=colors, alpha=0.7)
+    
+    # Add POC line
+    ax.axhline(y=poc_price, color='red', linestyle='--', linewidth=2, label=f'POC: {poc_price:.2f}')
+    
+    # Add VAH and VAL lines
+    ax.axhline(y=vah_price, color='green', linestyle='--', linewidth=1.5, label=f'VAH: {vah_price:.2f}')
+    ax.axhline(y=val_price, color='orange', linestyle='--', linewidth=1.5, label=f'VAL: {val_price:.2f}')
+    
+    # Formatting
+    ax.set_title(f'Anchored Volume Profile (MNQ 5m)\n{start_time.strftime("%Y-%m-%d %H:%M")} to {end_time.strftime("%Y-%m-%d %H:%M")} PST')
+    ax.set_xlabel('Volume')
+    ax.set_ylabel('Price')
+    ax.grid(True, axis='x', alpha=0.3)
+    ax.legend(loc='upper right')
+    
+    # Add text annotation with statistics
+    stats_text = f'Total Volume: {total_volume:,.0f}\nValue Area: {value_area_pct*100:.0f}%\nVA Range: {vah_price - val_price:.2f}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
     plt.tight_layout()
     output_path = os.path.join(export_dir, filename)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
+    
     print(f"Saved anchored volume profile to {output_path}")
+    print(f"POC: {poc_price:.2f} (Volume: {poc_volume:,.0f})")
+    print(f"VAH: {vah_price:.2f}")
+    print(f"VAL: {val_price:.2f}")
+    print(f"Value Area Range: {vah_price - val_price:.2f}")
+    
+    return {
+        'poc': poc_price,
+        'vah': vah_price,
+        'val': val_price,
+        'total_volume': total_volume,
+        'value_area_volume': accumulated_volume
+    }
 
-def export_mnq05_volume_profile(mnq05, anchor_index=0, bins=40):
-    plot_anchored_volume_profile(
+def export_mnq05_volume_profile(mnq05, start_time=None, end_time=None, bins=40, value_area_pct=0.70):
+    """
+    Export MNQ 5-minute volume profile.
+    
+    Parameters:
+    -----------
+    mnq05 : DataFrame with datetime index and OHLCV columns
+    start_time : str or datetime, default None (9:30 AM PST previous day)
+    end_time : str or datetime, default None (5:30 AM PST current day)
+    bins : int, number of price levels
+    value_area_pct : float, percentage of volume for value area (default 0.70)
+    """
+    return plot_anchored_volume_profile(
         mnq05,
-        anchor_index=anchor_index,
+        start_time=start_time,
+        end_time=end_time,
         bins=bins,
+        value_area_pct=value_area_pct,
         filename="mnq05_anchored_vp.png",
     )
 
@@ -437,4 +487,4 @@ if __name__ == "__main__":
     print(mnq1d.tail(10))
 
     export_mnq_candle_plots(mnq05, mnq30, mnq60, mnq1d)
-    export_mnq05_volume_profile(mnq05, anchor_index=0, bins=40)
+    export_mnq05_volume_profile(mnq05, value_area_pct=0.68)  # 68% instead of 70%
